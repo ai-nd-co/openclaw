@@ -11,6 +11,7 @@ import { createInterface } from "node:readline";
 import { WebSocketServer } from "openclaw/plugin-sdk/websocket-runtime";
 import { expect, it } from "vitest";
 import { loadHubRelayConfig, startHubRelayServer } from "./production-server.js";
+import { safeRelayErrorCode, type HubRelayDiagnostic } from "./startup-diagnostics.js";
 
 const env = { HUB_ORIGIN: "https://hub.example", HUB_RELAY_ORIGIN: "https://browser.example", HUB_RELAY_TOKEN: "synthetic-relay-token-not-a-real-secret-0001" };
 it("keeps public identity separate from internal Hub transport and defaults local binds", () => {
@@ -164,4 +165,35 @@ it("the built Node process exits on SIGTERM and heartbeat expiry even when the H
       }
     }
   } finally { await rm(output, { recursive: true, force: true }); }
+});
+
+
+it("startup reports rejected HTTP upgrades without leaking response headers, body or relay credentials", async () => {
+  const secret = "PRIVATE_VALUE_MUST_NOT_APPEAR";
+  const hub = createServer();
+  hub.on("upgrade", (_request, socket) => socket.end(
+    `HTTP/1.1 403 Forbidden\r\nX-Private: ${secret}\r\nContent-Length: ${secret.length}\r\nConnection: close\r\n\r\n${secret}`));
+  await new Promise<void>((resolve) => hub.listen(0, "127.0.0.1", resolve));
+  const events: HubRelayDiagnostic[] = [];
+  let running: Awaited<ReturnType<typeof startHubRelayServer>> | undefined;
+  try {
+    const origin = `http://127.0.0.1:${(hub.address() as { port: number }).port}`;
+    running = await startHubRelayServer(loadHubRelayConfig({ ...env,
+      HUB_CONNECT_ORIGIN: origin, HUB_RELAY_PORT: "0" }), (event) => events.push(event));
+    await expect(running.ready).rejects.toThrow("Hub relay authority is unavailable");
+    expect(await running.closed).toBe("authority_lost");
+    expect(events).toContainEqual({ stage: "http", event: "listening" });
+    expect(events).toContainEqual({ stage: "hub_socket", event: "upgrade_rejected", status: 403 });
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain(env.HUB_RELAY_TOKEN);
+    expect(logged).not.toContain(origin);
+    const error = Object.assign(new Error(secret), { code: secret,
+      cause: Object.assign(new Error(secret), { code: "ECONNREFUSED" }) });
+    expect(safeRelayErrorCode(error)).toBe("ECONNREFUSED");
+    expect(safeRelayErrorCode(Object.assign(new Error(secret), { code: secret }))).toBe("UNKNOWN");
+  } finally {
+    await running?.close(); hub.closeAllConnections();
+    await new Promise<void>((resolve) => hub.close(() => resolve()));
+  }
 });

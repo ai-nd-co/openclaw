@@ -3,6 +3,7 @@ import { WebSocket as NodeWebSocket } from "openclaw/plugin-sdk/websocket-runtim
 import { canonicalHubOrigin } from "../../../chrome-extension/modules/hub-installation-proof.js";
 import { isHubNativeCommand } from "../../../chrome-extension/modules/hub-method-policy.js";
 import { attachHubBrowserRelay } from "./relay-server.js";
+import { safeRelayErrorCode, type HubRelayDiagnostic } from "./startup-diagnostics.js";
 
 export type HubRelayConfig = {
   hubOrigin: string;
@@ -34,7 +35,7 @@ export function loadHubRelayConfig(env: Record<string, string | undefined>): Hub
 
 // Canonical public identity remains unchanged; only the operator-selected server
 // transport uses the cluster Service. Browser commands and URLs are not examined.
-function hubTransport(config: HubRelayConfig) {
+function hubTransport(config: HubRelayConfig, report: (diagnostic: HubRelayDiagnostic) => void) {
   const map = (raw: string | URL, socket: boolean) => {
     const input = new URL(String(raw));
     const expected = new URL(config.hubOrigin);
@@ -47,7 +48,17 @@ function hubTransport(config: HubRelayConfig) {
     return new URL(input.pathname + input.search, target);
   };
   class AuthoritySocket extends NodeWebSocket {
-    constructor(url: string, protocols: string[]) { super(map(url, true), protocols); }
+    constructor(url: string, protocols: string[]) {
+      super(map(url, true), protocols);
+      this.once("open", () => report({ stage: "hub_socket", event: "open",
+        protocolMatches: this.protocol === "agent-hub.relay.v1" }));
+      this.once("error", (error) => report({ stage: "hub_socket", event: "error", code: safeRelayErrorCode(error) }));
+      this.once("unexpected-response", (_request, response) => {
+        report({ stage: "hub_socket", event: "upgrade_rejected", status: response.statusCode });
+        response.resume(); this.terminate();
+      });
+      this.once("close", (code) => report({ stage: "hub_socket", event: "closed", closeCode: code }));
+    }
     // Authority is already invalidated before close. Do not keep the process
     // alive waiting for a stalled peer to acknowledge a WebSocket close frame.
     override close() { this.terminate(); }
@@ -59,7 +70,8 @@ function hubTransport(config: HubRelayConfig) {
   return { AuthorityWebSocket: AuthoritySocket, fetchImpl };
 }
 
-export async function startHubRelayServer(config: HubRelayConfig) {
+export async function startHubRelayServer(config: HubRelayConfig,
+  report: (diagnostic: HubRelayDiagnostic) => void = () => {}) {
   let relay: ReturnType<typeof attachHubBrowserRelay> | undefined;
   let closing: Promise<void> | undefined;
   let resolveClosed!: (reason: "shutdown" | "authority_lost") => void;
@@ -90,9 +102,11 @@ export async function startHubRelayServer(config: HubRelayConfig) {
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(config.port, config.host, () => { server.off("error", reject); resolve(); });
+      server.listen(config.port, config.host, () => {
+        server.off("error", reject); report({ stage: "http", event: "listening" }); resolve();
+      });
     });
-    relay = attachHubBrowserRelay(server, { ...hubTransport(config), hubOrigin: config.hubOrigin,
+    relay = attachHubBrowserRelay(server, { ...hubTransport(config, report), hubOrigin: config.hubOrigin,
       relayOrigin: config.relayOrigin, relayToken: config.relayToken, validateNativeCommand: isHubNativeCommand,
       onAuthorityLost: () => { void close("authority_lost").catch(() => {}); } });
     return { server, ready: relay.ready, closed, close };
