@@ -108,7 +108,8 @@ export async function startHubRelayServer(config: HubRelayConfig,
     });
     relay = attachHubBrowserRelay(server, { ...hubTransport(config, report), hubOrigin: config.hubOrigin,
       relayOrigin: config.relayOrigin, relayToken: config.relayToken, validateNativeCommand: isHubNativeCommand,
-      onAuthorityLost: () => { void close("authority_lost").catch(() => {}); } });
+      onAuthorityLost: (reason) => { report({ stage: "hub_authority", event: "lost", code: reason });
+        void close("authority_lost").catch(() => {}); } });
     return { server, ready: relay.ready, closed, close };
   } catch (error) { await close(); throw error; }
 }

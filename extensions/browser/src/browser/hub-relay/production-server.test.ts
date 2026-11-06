@@ -56,9 +56,10 @@ const ready = (socket: import("ws").WebSocket) => socket.send(JSON.stringify({ v
 
 it("actual HTTP readiness follows Hub auth; unauthenticated browser sockets get no control and authority loss closes the server", async () => {
   const hub = await hubFixture();
+  const diagnostics: HubRelayDiagnostic[] = [];
   let running: Awaited<ReturnType<typeof startHubRelayServer>> | undefined;
   try {
-    running = await startHubRelayServer(loadHubRelayConfig({ ...env, HUB_CONNECT_ORIGIN: hub.origin, HUB_RELAY_PORT: "0" }));
+    running = await startHubRelayServer(loadHubRelayConfig({ ...env, HUB_CONNECT_ORIGIN: hub.origin, HUB_RELAY_PORT: "0" }), (event) => diagnostics.push(event));
     const base = `http://127.0.0.1:${(running.server.address() as { port: number }).port}`;
     const authority = await hub.authenticated;
     expect((await fetch(base + "/healthz")).status).toBe(200);
@@ -73,6 +74,8 @@ it("actual HTTP readiness follows Hub auth; unauthenticated browser sockets get 
     expect(hub.introspections).toEqual([{ path: "/api/browser/relay/introspect", token: env.HUB_RELAY_TOKEN }]);
     authority.terminate();
     expect(await running.closed).toBe("authority_lost");
+    expect(diagnostics).toContainEqual({stage:"hub_authority",event:"lost",code:"transport_closed"});
+    expect(JSON.stringify(diagnostics)).not.toContain(env.HUB_RELAY_TOKEN);
     expect(running.server.listening).toBe(false);
   } finally { await running?.close(); await hub.close(); }
 });

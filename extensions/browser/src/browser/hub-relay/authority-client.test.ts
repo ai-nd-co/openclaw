@@ -27,14 +27,15 @@ function fixture() {
   let lost = 0;
   const invalidations: unknown[] = [];
   const browserInvalidations: unknown[] = [];
+  const failures: string[] = [];
   const client = createHubAuthorityConnection({hubOrigin:"https://hub.example",token:"synthetic-service-secret-1234567890",
     now:()=>1000,WebSocketImpl:Socket as unknown as typeof WebSocket,
-    onLost:()=>{lost++;},onInvalidate:(frame)=>invalidations.push(frame),onBrowserInvalidated:(frame)=>browserInvalidations.push(frame),onSnapshot:()=>{},
+    onLost:(reason)=>{lost++;failures.push(reason);},onInvalidate:(frame)=>invalidations.push(frame),onBrowserInvalidated:(frame)=>browserInvalidations.push(frame),onSnapshot:()=>{},
   });
   const socket=Socket.instance;
   socket.open();
   socket.receive({v:1,type:"ready",authorityId,expiresAt:16_000,controlSeq:0});
-  return {client,socket,invalidations,browserInvalidations,get lost(){return lost;}};
+  return {client,socket,invalidations,browserInvalidations,failures,get lost(){return lost;}};
 }
 
 it("correlates one-second permits and immediately fences a lost authority", async () => {
@@ -117,6 +118,7 @@ it("still rejects expired authority and excessive future expiry", async () => {
       f.socket.receive({v:1,type:"heartbeat",authorityId,expiresAt});
       expect(f.client.isCurrent()).toBe(false);
       expect(f.lost).toBe(1);
+      expect(f.failures).toEqual(["heartbeat_expiry"]);
     } finally { f.client.close(); }
   }
 });

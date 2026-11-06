@@ -6,7 +6,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket as Peer, type RawData } from "openclaw/plugin-sdk/websocket-runtime";
 import { canonicalHubOrigin } from "../../../chrome-extension/modules/hub-installation-proof.js";
 import { hasExactKeys, parseStrictJsonObject } from "../../../chrome-extension/modules/strict-json.js";
-import { createHubAuthorityConnection, type Invalidation, type HubAuthorityWebSocketConstructor } from "./authority-client.js";
+import { createHubAuthorityConnection, type Invalidation, type HubAuthorityWebSocketConstructor, type HubAuthorityFailure } from "./authority-client.js";
 import { parseExtensionMessage } from "../extension-relay/relay-protocol.js";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
@@ -25,7 +25,7 @@ export function attachHubBrowserRelay(server: Server, options: {
   hubOrigin: string; relayOrigin: string; relayToken: string;
   validateNativeCommand(frame: Frame): boolean;
   fetchImpl?: typeof fetch; AuthorityWebSocket?: HubAuthorityWebSocketConstructor;
-  onAuthorityLost?(): void;
+  onAuthorityLost?(reason: HubAuthorityFailure): void;
 }) {
   const hubOrigin = canonicalHubOrigin(options.hubOrigin);
   const relayOrigin = canonicalHubOrigin(options.relayOrigin);
@@ -72,7 +72,7 @@ export function attachHubBrowserRelay(server: Server, options: {
   };
   const authority = createHubAuthorityConnection({ hubOrigin, token: options.relayToken,
     WebSocketImpl: options.AuthorityWebSocket,
-    onLost: () => { lost(); options.onAuthorityLost?.(); }, onSnapshot: () => { /* Reconnect needs fresh device.cleaned, never snapshot admission. */ },
+    onLost: (reason) => { lost(); options.onAuthorityLost?.(reason); }, onSnapshot: () => { /* Reconnect needs fresh device.cleaned, never snapshot admission. */ },
     onInvalidate: (frame: Invalidation) => {
       const session = devices.get(frame.browserId)?.session;
       if (session?.sessionId === frame.sessionId && session.epoch === frame.epoch) {

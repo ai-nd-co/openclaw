@@ -1,7 +1,7 @@
 /** Fixed diagnostic categories only: never serialize errors, URLs, headers or tokens. */
 export type HubRelayDiagnostic = {
-  stage: "http" | "hub_socket";
-  event: "listening" | "open" | "error" | "upgrade_rejected" | "closed";
+  stage: "http" | "hub_socket" | "hub_authority";
+  event: "listening" | "open" | "error" | "upgrade_rejected" | "closed" | "lost";
   code?: string;
   status?: number;
   closeCode?: number;

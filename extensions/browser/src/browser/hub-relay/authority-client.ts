@@ -8,6 +8,9 @@ const CLOCK_SKEW_MAX_MS = 5_000;
 const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 const id = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
 
+export type HubAuthorityFailure = "handshake_timeout" | "authority_expired" | "ready_expiry" |
+  "heartbeat_expiry" | "request_timeout" | "protocol_rejected" | "transport_closed" | "transport_error" | "closed";
+
 export type DispatchPermit =
   | { allowed: true; grantVersion: number; authorizationId: string; expiresAt: number }
   | { allowed: false; error: string };
@@ -41,7 +44,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
   hubOrigin: string; token: string;
   onInvalidate(frame: Invalidation): void; onSnapshot(lease: Record<string, unknown>): void;
   onBrowserInvalidated?(frame: BrowserInvalidation): void;
-  onLost(): void; WebSocketImpl?: HubAuthorityWebSocketConstructor; now?: () => number; newId?: () => string;
+  onLost(reason: HubAuthorityFailure): void; WebSocketImpl?: HubAuthorityWebSocketConstructor; now?: () => number; newId?: () => string;
   setTimer?: typeof setTimeout; clearTimer?: typeof clearTimeout;
 }) {
   const origin = canonicalHubOrigin(hubOrigin);
@@ -62,13 +65,13 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
   // The owner can attach its await after creating the relay; never emit an unhandled rejection.
   void ready.catch(() => {});
   let expiryTimer: ReturnType<typeof setTimeout>;
-  const fail = () => {
+  const fail = (reason: HubAuthorityFailure = "protocol_rejected") => {
     if (state === "closed") return;
     state = "closed";
     clearTimer(expiryTimer);
     const error = new Error("Hub relay authority is unavailable");
     // Fail the data plane synchronously, including any already-resolved permits.
-    try { onLost(); } catch { /* Callback failure cannot leave the control socket usable. */ }
+    try { onLost(reason); } catch { /* Callback failure cannot leave the control socket usable. */ }
     rejectReady(error);
     for (const request of pending.values()) {
       clearTimer(request.timer); request.reject(error);
@@ -76,7 +79,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
     pending.clear();
     socket.close(4001, "Hub authority unavailable");
   };
-  expiryTimer = setTimer(fail, 10_000);
+  expiryTimer = setTimer(() => fail("handshake_timeout"), 10_000);
   const isCurrent = () => state === "ready" && socket.readyState === 1 && now() < expiresAt;
   const send = (frame: Record<string, unknown>) => {
     const raw = JSON.stringify(frame);
@@ -86,13 +89,14 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
     }
     socket.send(raw);
   };
-  const renew = (value: unknown) => {
+  const renew = (value: unknown, reason: "ready_expiry" | "heartbeat_expiry") => {
     if (!positive(value) || value <= now() || value > now() + 15_000 + CLOCK_SKEW_MAX_MS) {
+      fail(reason);
       throw new Error("Invalid Hub authority expiry");
     }
     expiresAt = value;
     clearTimer(expiryTimer);
-    expiryTimer = setTimer(fail, Math.max(1, expiresAt - now()));
+    expiryTimer = setTimer(() => fail("authority_expired"), Math.max(1, expiresAt - now()));
   };
   socket.addEventListener("open", () => {
     try {
@@ -110,7 +114,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
         if (!hasExactKeys(frame, ["v", "type", "authorityId", "expiresAt", "controlSeq"]) ||
             frame.type !== "ready" || !id(frame.authorityId) ||
             !Number.isSafeInteger(frame.controlSeq) || Number(frame.controlSeq) < 0) return fail();
-        renew(frame.expiresAt);
+        renew(frame.expiresAt, "ready_expiry");
         authorityId = frame.authorityId;
         controlSeq = Number(frame.controlSeq);
         state = "ready";
@@ -120,7 +124,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
       if (!isCurrent()) return fail();
       if (frame.type === "heartbeat") {
         if (!hasExactKeys(frame, ["v", "type", "authorityId", "expiresAt"]) || frame.authorityId !== authorityId) return fail();
-        renew(frame.expiresAt);
+        renew(frame.expiresAt, "heartbeat_expiry");
         return;
       }
       if (frame.type === "invalidate") {
@@ -174,20 +178,20 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
       pending.delete(frame.requestId); clearTimer(request.timer); request.resolve(result);
     } catch { fail(); }
   });
-  socket.addEventListener("close", fail);
-  socket.addEventListener("error", fail);
+  socket.addEventListener("close", () => fail("transport_closed"));
+  socket.addEventListener("error", () => fail("transport_error"));
   return {
     ready,
     isCurrent,
     get authorityId() { return authorityId; },
-    close: fail,
+    close: () => fail("closed"),
     request(type: Rpc, fields: Record<string, unknown>): Promise<unknown> {
       if (!isCurrent()) { fail(); return Promise.reject(new Error("Hub authority is unavailable")); }
       if (pending.size >= 16) return Promise.reject(new Error("Hub authority is busy"));
       const requestId = newId();
       if (!id(requestId) || pending.has(requestId)) return Promise.reject(new Error("Invalid authority request identifier"));
       return new Promise((resolve, reject) => {
-        const timer = setTimer(fail, Math.min(5000, Math.max(1, expiresAt - now())));
+        const timer = setTimer(() => fail("request_timeout"), Math.min(5000, Math.max(1, expiresAt - now())));
         pending.set(requestId, { type, grantVersion: Number(fields.grantVersion), resolve, reject, timer });
         try { send({ ...fields, v: 1, type, requestId }); } catch { fail(); }
       });
