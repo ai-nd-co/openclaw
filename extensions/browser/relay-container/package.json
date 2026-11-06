@@ -1,0 +1,9 @@
+{
+  "name": "@ai-nd-co/browser-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "dependencies": {"ws": "8.22.1"},
+  "devDependencies": {"esbuild": "0.28.2"}
+}
