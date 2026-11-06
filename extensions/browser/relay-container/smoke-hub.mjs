@@ -19,8 +19,8 @@ wss.on("connection", (socket) => {
     if (frame.v !== 1 || frame.type !== "authenticate" || frame.token !== token) return socket.close();
     accepted = true;
     const authorityId = randomUUID();
-    socket.send(JSON.stringify({ v: 1, type: "ready", authorityId, controlSeq: 0, expiresAt: Date.now() + 10_000 }));
-    timer = setInterval(() => socket.send(JSON.stringify({ v: 1, type: "heartbeat", authorityId, expiresAt: Date.now() + 10_000 })), 5_000);
+    socket.send(JSON.stringify({ v: 1, type: "ready", authorityId, controlSeq: 0, expiresAt: Date.now() + 15_100 }));
+    timer = setInterval(() => socket.send(JSON.stringify({ v: 1, type: "heartbeat", authorityId, expiresAt: Date.now() + 15_100 })), 5_000);
   });
   socket.on("close", () => clearInterval(timer));
 });

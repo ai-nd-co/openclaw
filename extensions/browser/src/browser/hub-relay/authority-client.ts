@@ -2,6 +2,9 @@ import { canonicalHubOrigin } from "../../../chrome-extension/modules/hub-instal
 import { hasExactKeys, parseStrictJsonObject } from "../../../chrome-extension/modules/strict-json.js";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+// Only the upper lifetime sanity check allows clock skew. Raw expiry values
+// still gate admission and timers; the Hub remains authoritative for TTLs.
+const CLOCK_SKEW_MAX_MS = 5_000;
 const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 const id = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
 
@@ -84,7 +87,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
     socket.send(raw);
   };
   const renew = (value: unknown) => {
-    if (!positive(value) || value <= now() || value > now() + 15_000) {
+    if (!positive(value) || value <= now() || value > now() + 15_000 + CLOCK_SKEW_MAX_MS) {
       throw new Error("Invalid Hub authority expiry");
     }
     expiresAt = value;
@@ -152,7 +155,7 @@ export function createHubAuthorityConnection({ hubOrigin, token, onInvalidate, o
         if (frame.allowed === true) {
           if (!hasExactKeys(frame, ["v", "type", "requestId", "allowed", "grantVersion", "authorizationId", "expiresAt"]) ||
               frame.grantVersion !== request.grantVersion || !id(frame.authorizationId) ||
-              !positive(frame.expiresAt) || frame.expiresAt <= now() || frame.expiresAt > now() + 1000) return fail();
+              !positive(frame.expiresAt) || frame.expiresAt <= now() || frame.expiresAt > now() + 1000 + CLOCK_SKEW_MAX_MS) return fail();
           result = { allowed: true, grantVersion: frame.grantVersion,
             authorizationId: frame.authorizationId, expiresAt: frame.expiresAt };
         } else {

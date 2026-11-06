@@ -197,3 +197,20 @@ it("startup reports rejected HTTP upgrades without leaking response headers, bod
     await new Promise<void>((resolve) => hub.close(() => resolve()));
   }
 });
+
+it("a real authority heartbeat tolerates small clock lead without terminating the relay", async () => {
+  const hub = await hubFixture();
+  let running: Awaited<ReturnType<typeof startHubRelayServer>> | undefined;
+  try {
+    running = await startHubRelayServer(loadHubRelayConfig({ ...env, HUB_CONNECT_ORIGIN: hub.origin, HUB_RELAY_PORT: "0" }));
+    const socket = await hub.authenticated;
+    const authorityId = randomUUID();
+    socket.send(JSON.stringify({v:1,type:"ready",authorityId,expiresAt:Date.now()+15_100,controlSeq:0}));
+    await running.ready;
+    socket.send(JSON.stringify({v:1,type:"heartbeat",authorityId,expiresAt:Date.now()+15_100}));
+    const pong = new Promise<void>((resolve, reject) => {socket.once("pong",()=>resolve());socket.once("close",()=>reject(new Error("Valid authority heartbeat closed the socket")));});
+    socket.ping(); await pong;
+    const base = `http://127.0.0.1:${(running.server.address() as {port:number}).port}`;
+    expect((await fetch(base+"/readyz")).status).toBe(200);
+  } finally { await running?.close(); await hub.close(); }
+});

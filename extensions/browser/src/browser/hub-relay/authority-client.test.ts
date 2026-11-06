@@ -95,3 +95,42 @@ it("idle browser invalidation shares sequencing with session invalidations", asy
     expect(f.browserInvalidations).toHaveLength(1);
   } finally {f.client.close();}
 });
+
+it("accepts a small server clock lead in authority heartbeats and permits", async () => {
+  const f = fixture();
+  try {
+    await f.client.ready;
+    f.socket.receive({v:1,type:"heartbeat",authorityId,expiresAt:16_100});
+    expect(f.client.isCurrent()).toBe(true);
+    expect(f.lost).toBe(0);
+    const pending = f.client.request("authorize",{browserId,sessionId,grantVersion:1,commandId:hubCommandId(sessionId,1)});
+    f.socket.receive({v:1,type:"authorized",requestId:f.socket.sent.at(-1)!.requestId,allowed:true,grantVersion:1,authorizationId:randomUUID(),expiresAt:2_100});
+    expect(await pending).toMatchObject({allowed:true,expiresAt:2_100});
+  } finally { f.client.close(); }
+});
+
+it("still rejects expired authority and excessive future expiry", async () => {
+  for (const expiresAt of [1_000,21_001]) {
+    const f = fixture();
+    try {
+      await f.client.ready;
+      f.socket.receive({v:1,type:"heartbeat",authorityId,expiresAt});
+      expect(f.client.isCurrent()).toBe(false);
+      expect(f.lost).toBe(1);
+    } finally { f.client.close(); }
+  }
+});
+
+it("does not grant expiry grace to permits or accept excessive permit lifetime", async () => {
+  for (const expiresAt of [1_000,7_001]) {
+    const f = fixture();
+    try {
+      await f.client.ready;
+      const pending = f.client.request("authorize",{browserId,sessionId,grantVersion:1,commandId:hubCommandId(sessionId,1)});
+      const rejected = expect(pending).rejects.toThrow("unavailable");
+      f.socket.receive({v:1,type:"authorized",requestId:f.socket.sent.at(-1)!.requestId,allowed:true,grantVersion:1,authorizationId:randomUUID(),expiresAt});
+      await rejected;
+      expect(f.client.isCurrent()).toBe(false);
+    } finally { f.client.close(); }
+  }
+});
